@@ -42,7 +42,7 @@ class ConvBlock(nn.Module):
         return self.blocks(x)
 
 class YOLOv1(nn.Module):
-    def __init__(self, split_size, num_boxes, num_classes, input_size = 448) -> None:
+    def __init__(self, split_size=7, num_boxes=2, num_classes=20, input_size = 448) -> None:
         super().__init__()
         self.input_size = input_size
         self.S = split_size
