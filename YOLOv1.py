@@ -33,8 +33,10 @@ class ConvBlock(nn.Module):
         super().__init__()
         self.blocks = nn.Sequential(
             nn.Conv2d(in_channels, out_channels,
-                kernel_size, stride, padding
+                kernel_size, stride, padding, bias=False
             ),
+            # Add this trying to solve the low loss but low mAP problem.
+            nn.BatchNorm2d(out_channels),
             nn.LeakyReLU(0.1)
         )
 

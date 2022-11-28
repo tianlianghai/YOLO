@@ -3,7 +3,7 @@ from YOLOv1 import YOLOv1
 from YoloLoss import YoloLoss
 from PIL import Image
 from torchvision import transforms
-
+from Dataset import VOCDataset
 darknet = YOLOv1()
 img = Image.open("data/dog.jpg")
 transform = transforms.Compose([
@@ -25,10 +25,17 @@ def test_yololoss():
     loss = yololoss(out, target)
     return loss
 
+def test_dataset():
+    img_dir = "data/images"
+    label_dir = "data/labels"
+    # csv_dir = "data/train.csv"
+    csv_dir = "data/8examples.csv"
+    dataset = VOCDataset(img_dir, label_dir, csv_dir)
+    return dataset
 
 def main():
-    res = test_yololoss()
-    print(res)
-    print(res.shape)
+    res = test_dataset()
+    res[0][0].show()
+    print(res[1].shape)
 
 main()
