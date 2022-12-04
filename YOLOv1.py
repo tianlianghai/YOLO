@@ -95,11 +95,11 @@ class YOLOv1(nn.Module):
     def get_fcs(self):
         fcs = nn.Sequential(
             nn.Flatten(),
-            nn.LeakyReLU(0.1),
-            nn.Linear(7 * 7 * 1024, 4096),
+            # nn.LeakyReLU(0.1),
+            nn.Linear(7 * 7 * 1024, 496),
             nn.LeakyReLU(0.1),
             nn.Linear(
-                4096, 
+                496, 
                 self.S * self.S * (self.C + 5 * self.B)
                 )
         )

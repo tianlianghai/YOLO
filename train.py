@@ -1,116 +1,159 @@
-import torch
-from torch import optim
-from torchvision import transforms
-from torchvision.transforms import functional as F
-from tqdm import tqdm
-from torch.utils.data.dataloader import DataLoader
-from YOLOv1 import YOLOv1
-from YoloLoss import YoloLoss
-from Dataset import VOCDataset
-from utils import(
-    intersection_over_union,
-    none_max_suppression,
-    mean_average_precision,  
-    load_checkpoint,
-    save_checkpoint,
-    get_bboxes,
-)
-SEED = 123
-torch.manual_seed(SEED)
+"""
+Main file for training Yolo model on Pascal VOC dataset
 
-# Hyper parameter etc.
+"""
+
+import torch
+import torchvision.transforms as transforms
+import torch.optim as optim
+import torchvision.transforms.functional as FT
+from tqdm import tqdm
+from torch.utils.data import DataLoader
+from model import Yolov1
+from dataset import VOCDataset
+from utils import (
+    non_max_suppression,
+    mean_average_precision,
+    intersection_over_union,
+    cellboxes_to_boxes,
+    get_bboxes,
+    plot_image,
+    save_checkpoint,
+    load_checkpoint,
+)
+from YoloLoss import YoloLoss
+
+seed = 123
+torch.manual_seed(seed)
+
+# Hyperparameters etc. 
 LEARNING_RATE = 2e-5
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE = 16
-WEIGHT_DECAY = 0 
+DEVICE = "cuda" if torch.cuda.is_available else "cpu"
+BATCH_SIZE = 16 # 64 in original paper but I don't have that much vram, grad accum?
+WEIGHT_DECAY = 0
+EPOCHS = 100
 NUM_WORKERS = 2
-EPOCH = 100
 PIN_MEMORY = True
 LOAD_MODEL = False
-LOAD_MODEL_PATH = "overfit.pth.tar"
+LOAD_MODEL_FILE = "overfit.pth.tar"
+IMG_DIR = "data/images"
+LABEL_DIR = "data/labels"
+
 
 class Compose(object):
     def __init__(self, transforms):
-        super().__init__()
         self.transforms = transforms
-    def __call__(self, img, bboxes) :
+
+    def __call__(self, img, bboxes):
         for t in self.transforms:
             img, bboxes = t(img), bboxes
+
         return img, bboxes
 
-def train_fn(model, loss_fn, optimizer, train_loader):
-    # for each item in dataset, (img_tensor, label_matrix)
-    # img_tensor: (3, 448, 448)
-    # label_matrix: (7, 7, 25) where 25 = 20 + 5 * 1
-    
+
+transform = Compose([transforms.Resize((448, 448)), transforms.ToTensor(),])
+
+
+def train_fn(train_loader, model, optimizer, loss_fn):
+    loop = tqdm(train_loader, leave=True)
     mean_loss = []
-    for idx, (x, y) in enumerate(train_loader):
+
+    for batch_idx, (x, y) in enumerate(loop):
         x, y = x.to(DEVICE), y.to(DEVICE)
         out = model(x)
         loss = loss_fn(out, y)
+        mean_loss.append(loss.item())
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        mean_loss.append(loss)
-    
-    print(f"Mean loss of each batch was {sum(mean_loss) / len(mean_loss)}")
-    
+
+        # update progress bar
+        loop.set_postfix(loss=loss.item())
+
+    print(f"Mean loss was {sum(mean_loss)/len(mean_loss)}")
+
+
 def main():
-    model = YOLOv1().to(DEVICE)
+    model = Yolov1(split_size=7, num_boxes=2, num_classes=20).to(DEVICE)
+    optimizer = optim.Adam(
+        model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+    )
     loss_fn = YoloLoss()
-    optimizer = optim.Adam(model.parameters(),LEARNING_RATE,
-                           weight_decay=WEIGHT_DECAY)
-    transform = Compose((transforms.Resize((448, 448)), transforms.ToTensor()))
+
     if LOAD_MODEL:
-        load_checkpoint(LOAD_MODEL_PATH, model, optimizer)
-    
-    trian_dataset = VOCDataset(
-        "data/images",
-        "data/labels",
-        "data/8examples.csv",
-        transform=transform
+        load_checkpoint(torch.load(LOAD_MODEL_FILE), model, optimizer)
+
+    train_dataset = VOCDataset(
+        "data/train.csv",
+        transform=transform,
+        img_dir=IMG_DIR,
+        label_dir=LABEL_DIR,
     )
-    
-    
+
     test_dataset = VOCDataset(
-        "data/images",
-        "data/labels",
-        "data/test.csv",
-        transform=transform
+        "data/test.csv", transform=transform, img_dir=IMG_DIR, label_dir=LABEL_DIR,
     )
-    
-    train_dataloader = DataLoader(
-        trian_dataset,
+
+    train_loader = DataLoader(
+        dataset=train_dataset,
         batch_size=BATCH_SIZE,
-        shuffle=False,
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
-        drop_last=False,       
+        shuffle=True,
+        drop_last=True,
     )
-    
-    test_dataloader = DataLoader(
-        test_dataset,
+
+    test_loader = DataLoader(
+        dataset=test_dataset,
         batch_size=BATCH_SIZE,
-        shuffle=False,
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
-        drop_last=False,       
+        shuffle=True,
+        drop_last=True,
     )
-    
-    for epoch in range(EPOCH):
-        print(f"***************EPOCH: {epoch}*****************")
+
+    saved = False
+    for epoch in range(EPOCHS):
+        print(f"**************************epoch {epoch}***********************************")
+        
+        if LOAD_MODEL:
+            for x, y in train_loader:
+                x = x.to(DEVICE)
+                for idx in range(8):
+                    bboxes = cellboxes_to_boxes(model(x))
+                    bboxes = non_max_suppression(bboxes[idx], iou_threshold=0.5, threshold=0.4, box_format="midpoint")
+                    plot_image(x[idx].permute(1,2,0).to("cpu"), bboxes)
+
+                import sys
+                sys.exit()
+
         pred_boxes, target_boxes = get_bboxes(
-            train_dataloader, model
+            train_loader, model, iou_threshold=0.5, threshold=0.4
         )
-        if epoch==50:
-            print("epoch stop")
-        mAP = mean_average_precision(
-            pred_boxes, target_boxes
-        )
-        print(f"Train mAP: {mAP}")
-        train_fn(model, loss_fn, optimizer, train_dataloader)
 
-if __name__== "__main__":
+        mean_avg_prec = mean_average_precision(
+            pred_boxes, target_boxes, iou_threshold=0.5, box_format="midpoint"
+        )
+        print(f"Train mAP: {mean_avg_prec}")
+
+        if mean_avg_prec > 0.9:
+           checkpoint = {
+               "state_dict": model.state_dict(),
+               "optimizer": optimizer.state_dict(),
+           }
+           save_checkpoint(checkpoint, filename=load_model_file)
+           break
+
+        train_fn(train_loader, model, optimizer, loss_fn)
+    if not saved:
+        checkpoint = {
+       	   "state_dict": model.state_dict(),
+           "optimizer": optimizer.state_dict(),
+        }
+       	save_checkpoint(checkpoint, filename=LOAD_MODEL_FILE)
+
+
+
+
+if __name__ == "__main__":
     main()
-
-
